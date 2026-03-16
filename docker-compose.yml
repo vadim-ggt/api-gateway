@@ -1,0 +1,198 @@
+services:
+  postgres-auth:
+    image: postgres:15-alpine
+    container_name: postgres-auth
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${AUTH_DB_NAME}
+    ports:
+      - "5432:5432"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${AUTH_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-user:
+    image: postgres:15-alpine
+    container_name: postgres-user
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${USER_DB_NAME}
+    ports:
+      - "5433:5432"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${USER_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-order:
+    image: postgres:15-alpine
+    container_name: postgres-order
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${ORDER_DB_NAME}
+    ports:
+      - "5434:5432"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${ORDER_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app-redis:
+    image: redis:7-alpine
+    container_name: app-redis
+    ports:
+      - "6380:6379"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  authservice-app:
+    build:
+      context: ../authservice
+    container_name: authservice-app
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      app-redis:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - APP_PORT=${AUTH_APP_PORT}
+      - DOCKER_DB_HOST=postgres-auth
+      - DB_HOST_PORT=5432
+      - DB_NAME=${AUTH_DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DOCKER_REDIS_HOST=app-redis
+      - REDIS_PORT=6379
+      - USER_SERVICE_DOCKER_URL=http://userservice-app:${USER_APP_PORT}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+    ports:
+      - "${AUTH_APP_PORT}:${AUTH_APP_PORT}"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${AUTH_APP_PORT}/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  userservice-app:
+    build:
+      context: ../userservice
+    container_name: userservice-app
+    depends_on:
+      postgres-user:
+        condition: service_healthy
+      app-redis:
+        condition: service_healthy
+      authservice-app:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - APP_PORT=${USER_APP_PORT}
+      - DOCKER_DB_HOST=postgres-user
+      - DB_HOST_PORT=5432
+      - DB_NAME=${USER_DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DOCKER_REDIS_HOST=app-redis
+      - REDIS_PORT=6379
+      - AUTH_SERVICE_DOCKER_URL=http://authservice-app:${AUTH_APP_PORT}
+      - AUTH_SERVICE_URL=http://authservice-app:${AUTH_APP_PORT}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+    ports:
+      - "${USER_APP_PORT}:${USER_APP_PORT}"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${USER_APP_PORT}/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  orderservice-app:
+    build:
+      context: ../orderservice
+    container_name: orderservice-app
+    depends_on:
+      postgres-order:
+        condition: service_healthy
+      authservice-app:
+        condition: service_healthy
+      userservice-app:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - APP_PORT=${ORDER_APP_PORT}
+      - DOCKER_DB_HOST=postgres-order
+      - DB_NAME=${ORDER_DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - AUTH_SERVICE_DOCKER_URL=http://authservice-app:${AUTH_APP_PORT}
+      - USER_SERVICE_DOCKER_URL=http://userservice-app:${USER_APP_PORT}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+    ports:
+      - "${ORDER_APP_PORT}:${ORDER_APP_PORT}"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${ORDER_APP_PORT}/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  apigateway-app:
+    build:
+      context: .
+    container_name: apigateway-app
+    depends_on:
+      authservice-app:
+        condition: service_healthy
+      userservice-app:
+        condition: service_healthy
+      orderservice-app:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - APP_PORT=${API_GATEWAY_PORT}
+      - API_GATEWAY_PORT=${API_GATEWAY_PORT}
+      - AUTH_APP_PORT=${AUTH_APP_PORT}
+      - USER_APP_PORT=${USER_APP_PORT}
+      - ORDER_APP_PORT=${ORDER_APP_PORT}
+      - ROLLBACK_KEY=${INTERNAL_API_KEY}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - MICROSERVICES_AUTH_URL=http://authservice-app:${AUTH_APP_PORT}
+      - MICROSERVICES_USER_URL=http://userservice-app:${USER_APP_PORT}
+      - AUTH_SERVICE_URL=http://authservice-app:${AUTH_APP_PORT}
+      - USER_SERVICE_URL=http://userservice-app:${USER_APP_PORT}
+      - ORDER_SERVICE_URL=http://orderservice-app:${ORDER_APP_PORT}
+    ports:
+      - "${API_GATEWAY_PORT}:${API_GATEWAY_PORT}"
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
