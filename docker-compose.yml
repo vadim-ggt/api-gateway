@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${AUTH_DB_NAME}
     ports:
-      - "5432:5432"
+      - "5435:5432"
     networks:
       - app-network
     healthcheck:
@@ -188,6 +188,7 @@ services:
       - AUTH_SERVICE_URL=http://authservice-app:${AUTH_APP_PORT}
       - USER_SERVICE_URL=http://userservice-app:${USER_APP_PORT}
       - ORDER_SERVICE_URL=http://orderservice-app:${ORDER_APP_PORT}
+      - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI=http://authservice-app:${AUTH_APP_PORT}/api/auth/.well-known/jwks.json
     ports:
       - "${API_GATEWAY_PORT}:${API_GATEWAY_PORT}"
     networks:
