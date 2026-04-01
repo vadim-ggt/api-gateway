@@ -1,4 +1,83 @@
 services:
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    ports:
+      - "${KAFKA_PORT_EXTERNAL}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:${KAFKA_PORT_EXTERNAL}
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+    networks:
+      - app-network
+
+  kafka-ui:
+      image: provectuslabs/kafka-ui:latest
+      container_name: kafka-ui
+      ports:
+        - "${KAFKA_UI_PORT}:8080"
+      depends_on:
+        - kafka
+      environment:
+        KAFKA_CLUSTERS_0_NAME: local
+        KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      networks:
+        - app-network
+
+  mongo-payment:
+    image: mongo:6.0
+    container_name: mongo-payment
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_PAYMENT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PAYMENT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${PAYMENT_DB_NAME}
+    ports:
+      - "${MONGO_PAYMENT_PORT}:27017"
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "mongosh", "-u", "${MONGO_PAYMENT_USER}", "-p", "${MONGO_PAYMENT_PASSWORD}", "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  paymentservice-app:
+    build:
+      context: ../paymentService
+    container_name: paymentservice-app
+    depends_on:
+      mongo-payment:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - PAYMENT_APP_PORT=${PAYMENT_APP_PORT}
+      - MONGO_URI=mongodb://${MONGO_PAYMENT_USER}:${MONGO_PAYMENT_PASSWORD}@mongo-payment:27017/${PAYMENT_DB_NAME}?authSource=admin
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - AUTH_SERVICE_DOCKER_URL=http://authservice-app:${AUTH_APP_PORT}
+    ports:
+      - "${PAYMENT_APP_PORT}:${PAYMENT_APP_PORT}"
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${PAYMENT_APP_PORT}/actuator/health || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   postgres-auth:
     image: postgres:15-alpine
     container_name: postgres-auth
@@ -142,7 +221,10 @@ services:
         condition: service_healthy
       userservice-app:
         condition: service_healthy
+      kafka:
+          condition: service_started
     environment:
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - SPRING_PROFILES_ACTIVE=docker
       - APP_PORT=${ORDER_APP_PORT}
       - DOCKER_DB_HOST=postgres-order
@@ -174,7 +256,10 @@ services:
         condition: service_healthy
       orderservice-app:
         condition: service_healthy
+      paymentservice-app:
+        condition: service_healthy
     environment:
+      - PAYMENT_APP_PORT=${PAYMENT_APP_PORT}
       - SPRING_PROFILES_ACTIVE=docker
       - APP_PORT=${API_GATEWAY_PORT}
       - API_GATEWAY_PORT=${API_GATEWAY_PORT}
